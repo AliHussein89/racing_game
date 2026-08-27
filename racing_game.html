@@ -1,0 +1,848 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>لعبة المسارات</title>
+<style>
+    * {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+    }
+
+    body {
+        min-height: 100vh;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        background: #111;
+        font-family: Arial, sans-serif;
+        overflow: hidden;
+    }
+
+    #game {
+        position: relative;
+        width: min(100vw, 480px);
+        height: min(100vh, 800px);
+        max-height: 100vh;
+        overflow: hidden;
+        background: #222;
+    }
+
+    canvas {
+        display: block;
+        width: 100%;
+        height: 100%;
+    }
+
+    #hud {
+        position: absolute;
+        top: 15px;
+        left: 15px;
+        right: 15px;
+        display: flex;
+        justify-content: space-between;
+        direction: rtl;
+        color: white;
+        font-size: 15px;
+        font-weight: bold;
+        pointer-events: none;
+        z-index: 2;
+    }
+
+    .stat {
+        background: rgba(0,0,0,.45);
+        padding: 8px 10px;
+        border-radius: 8px;
+        backdrop-filter: blur(3px);
+    }
+
+    .overlay {
+        position: absolute;
+        inset: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        flex-direction: column;
+        background: rgba(0,0,0,.7);
+        color: white;
+        z-index: 5;
+        text-align: center;
+    }
+
+    .overlay h1 {
+        font-size: 42px;
+        margin-bottom: 12px;
+    }
+
+    .overlay p {
+        font-size: 18px;
+        margin-bottom: 25px;
+        color: #ddd;
+    }
+
+    button {
+        border: 0;
+        border-radius: 12px;
+        padding: 14px 55px;
+        font-size: 20px;
+        font-weight: bold;
+        cursor: pointer;
+        background: #fff;
+        color: #111;
+    }
+
+    button:active {
+        transform: scale(.96);
+    }
+
+    #gameOver {
+        display: none;
+    }
+</style>
+</head>
+
+<body>
+
+<div id="game">
+
+    <canvas id="canvas"></canvas>
+
+    <div id="hud">
+        <div class="stat">المسافة: <span id="distance">0</span> م</div>
+        <div class="stat">السرعة ×<span id="multiplier">1.0</span></div>
+        <div class="stat">الأفضل: <span id="best">0</span> م</div>
+    </div>
+
+    <div id="startScreen" class="overlay">
+        <h1>المسارات</h1>
+        <p>حرّك سيارتك بين المسارات وتجنب السيارات</p>
+        <button id="startBtn">ابدأ</button>
+    </div>
+
+    <div id="gameOver" class="overlay">
+        <h1>انتهت الجولة</h1>
+        <p>المسافة: <span id="finalDistance">0</span> م</p>
+        <button id="restartBtn">إعادة اللعب</button>
+    </div>
+
+</div>
+
+<script>
+const canvas = document.getElementById("canvas");
+const ctx = canvas.getContext("2d");
+
+const game = document.getElementById("game");
+
+const distanceEl = document.getElementById("distance");
+const multiplierEl = document.getElementById("multiplier");
+const bestEl = document.getElementById("best");
+const finalDistanceEl = document.getElementById("finalDistance");
+
+const startScreen = document.getElementById("startScreen");
+const gameOverScreen = document.getElementById("gameOver");
+
+const startBtn = document.getElementById("startBtn");
+const restartBtn = document.getElementById("restartBtn");
+
+let W, H;
+let animationId;
+let lastTime = 0;
+
+let running = false;
+let distance = 0;
+let bestScore = 0;
+
+let speed = 300;
+const maxSpeed = 720;
+const acceleration = 18;
+
+let roadLineOffset = 0;
+
+let spawnTimer = 0;
+let spawnInterval = 850;
+
+const lanes = 3;
+
+const player = {
+    lane: 1,
+    targetLane: 1,
+    x: 0,
+    y: 0,
+    width: 48,
+    height: 82,
+    color: "#35a7ff"
+};
+
+let enemies = [];
+
+// -----------------------------
+// إعداد حجم الـ Canvas
+// -----------------------------
+
+function resize() {
+    const rect = game.getBoundingClientRect();
+
+    W = rect.width;
+    H = rect.height;
+
+    const dpr = window.devicePixelRatio || 1;
+
+    canvas.width = W * dpr;
+    canvas.height = H * dpr;
+
+    canvas.style.width = W + "px";
+    canvas.style.height = H + "px";
+
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+    player.y = H - 125;
+    player.x = laneCenter(player.lane);
+}
+
+window.addEventListener("resize", resize);
+
+// -----------------------------
+// الطريق
+// -----------------------------
+
+function roadLeft() {
+    return W * 0.08;
+}
+
+function roadRight() {
+    return W * 0.92;
+}
+
+function roadWidth() {
+    return roadRight() - roadLeft();
+}
+
+function laneWidth() {
+    return roadWidth() / lanes;
+}
+
+function laneCenter(lane) {
+    return roadLeft() + laneWidth() * lane + laneWidth() / 2;
+}
+
+// -----------------------------
+// رسم الطريق
+// -----------------------------
+
+function drawRoad() {
+
+    // الخلفية
+    ctx.fillStyle = "#176b35";
+    ctx.fillRect(0, 0, W, H);
+
+    // الطريق
+    ctx.fillStyle = "#292929";
+    ctx.fillRect(
+        roadLeft(),
+        0,
+        roadWidth(),
+        H
+    );
+
+    // حواف الطريق
+    ctx.fillStyle = "#eee";
+
+    ctx.fillRect(
+        roadLeft() - 4,
+        0,
+        4,
+        H
+    );
+
+    ctx.fillRect(
+        roadRight(),
+        0,
+        4,
+        H
+    );
+
+    // خطوط المسارات
+    ctx.strokeStyle = "#ddd";
+    ctx.lineWidth = 4;
+    ctx.setLineDash([35, 35]);
+
+    for (let i = 1; i < lanes; i++) {
+
+        const x = roadLeft() + laneWidth() * i;
+
+        ctx.beginPath();
+
+        ctx.moveTo(
+            x,
+            -70 + roadLineOffset
+        );
+
+        ctx.lineTo(
+            x,
+            H + 70
+        );
+
+        ctx.stroke();
+    }
+
+    ctx.setLineDash([]);
+}
+
+// -----------------------------
+// رسم سيارة
+// -----------------------------
+
+function drawCar(car, isPlayer = false) {
+
+    const x = car.x;
+    const y = car.y;
+    const w = car.width;
+    const h = car.height;
+
+    ctx.save();
+
+    // ظل
+    ctx.fillStyle = "rgba(0,0,0,.3)";
+    ctx.beginPath();
+    ctx.ellipse(
+        x,
+        y + h / 2 + 8,
+        w * .55,
+        10,
+        0,
+        0,
+        Math.PI * 2
+    );
+    ctx.fill();
+
+    // جسم السيارة
+    ctx.fillStyle = car.color;
+
+    roundRect(
+        ctx,
+        x - w / 2,
+        y - h / 2,
+        w,
+        h,
+        10
+    );
+
+    ctx.fill();
+
+    // الزجاج
+    ctx.fillStyle = "#17202a";
+
+    roundRect(
+        ctx,
+        x - w * .31,
+        y - h * .28,
+        w * .62,
+        h * .30,
+        7
+    );
+
+    ctx.fill();
+
+    // خط الزجاج السفلي
+    ctx.fillStyle = "rgba(255,255,255,.15)";
+
+    ctx.fillRect(
+        x - w * .30,
+        y - 2,
+        w * .60,
+        3
+    );
+
+    // المصابيح
+    ctx.fillStyle = "#fff3a1";
+
+    ctx.fillRect(
+        x - w * .32,
+        y - h / 2 + 7,
+        9,
+        6
+    );
+
+    ctx.fillRect(
+        x + w * .32 - 9,
+        y - h / 2 + 7,
+        9,
+        6
+    );
+
+    // العجلات
+    ctx.fillStyle = "#111";
+
+    const wheelY1 = y - h * .28;
+    const wheelY2 = y + h * .28;
+
+    ctx.fillRect(
+        x - w / 2 - 3,
+        wheelY1,
+        7,
+        18
+    );
+
+    ctx.fillRect(
+        x + w / 2 - 4,
+        wheelY1,
+        7,
+        18
+    );
+
+    ctx.fillRect(
+        x - w / 2 - 3,
+        wheelY2,
+        7,
+        18
+    );
+
+    ctx.fillRect(
+        x + w / 2 - 4,
+        wheelY2,
+        7,
+        18
+    );
+
+    // إطار سيارة اللاعب
+    if (isPlayer) {
+        ctx.strokeStyle = "rgba(255,255,255,.8)";
+        ctx.lineWidth = 2;
+
+        roundRect(
+            ctx,
+            x - w / 2,
+            y - h / 2,
+            w,
+            h,
+            10
+        );
+
+        ctx.stroke();
+    }
+
+    ctx.restore();
+}
+
+function roundRect(ctx, x, y, width, height, radius) {
+
+    ctx.beginPath();
+
+    ctx.moveTo(x + radius, y);
+
+    ctx.lineTo(x + width - radius, y);
+
+    ctx.quadraticCurveTo(
+        x + width,
+        y,
+        x + width,
+        y + radius
+    );
+
+    ctx.lineTo(
+        x + width,
+        y + height - radius
+    );
+
+    ctx.quadraticCurveTo(
+        x + width,
+        y + height,
+        x + width - radius,
+        y + height
+    );
+
+    ctx.lineTo(
+        x + radius,
+        y + height
+    );
+
+    ctx.quadraticCurveTo(
+        x,
+        y + height,
+        x,
+        y + height - radius
+    );
+
+    ctx.lineTo(
+        x,
+        y + radius
+    );
+
+    ctx.quadraticCurveTo(
+        x,
+        y,
+        x + radius,
+        y
+    );
+
+    ctx.closePath();
+}
+
+// -----------------------------
+// السيارات المعادية
+// -----------------------------
+
+function spawnEnemy() {
+
+    // لا نسمح بتكدس السيارات في نفس المنطقة
+    let availableLanes = [];
+
+    for (let lane = 0; lane < lanes; lane++) {
+
+        const blocked = enemies.some(enemy =>
+            enemy.lane === lane &&
+            enemy.y < 170
+        );
+
+        if (!blocked) {
+            availableLanes.push(lane);
+        }
+    }
+
+    if (availableLanes.length === 0) return;
+
+    const lane =
+        availableLanes[
+            Math.floor(Math.random() * availableLanes.length)
+        ];
+
+    const colors = [
+        "#e74c3c",
+        "#f1c40f",
+        "#9b59b6",
+        "#e67e22",
+        "#2ecc71"
+    ];
+
+    enemies.push({
+        lane,
+        x: laneCenter(lane),
+        y: -70,
+        width: 48,
+        height: 82,
+        color: colors[
+            Math.floor(Math.random() * colors.length)
+        ]
+    });
+}
+
+// -----------------------------
+// الاصطدام
+// -----------------------------
+
+function collision(a, b) {
+
+    const ax = a.x - a.width / 2;
+    const ay = a.y - a.height / 2;
+
+    const bx = b.x - b.width / 2;
+    const by = b.y - b.height / 2;
+
+    const paddingX = 8;
+    const paddingY = 10;
+
+    return (
+        ax + paddingX < bx + b.width - paddingX &&
+        ax + a.width - paddingX > bx + paddingX &&
+        ay + paddingY < by + b.height - paddingY &&
+        ay + a.height - paddingY > by + paddingY
+    );
+}
+
+// -----------------------------
+// تحديث اللعبة
+// -----------------------------
+
+function update(dt) {
+
+    // زيادة السرعة تدريجياً
+    speed += acceleration * dt;
+
+    if (speed > maxSpeed) {
+        speed = maxSpeed;
+    }
+
+    // المسافة
+    distance += speed * dt * 0.025;
+
+    // حركة خطوط الطريق
+    roadLineOffset += speed * dt;
+
+    if (roadLineOffset > 70) {
+        roadLineOffset -= 70;
+    }
+
+    // انتقال السيارة بسلاسة
+    const targetX = laneCenter(player.targetLane);
+
+    player.x +=
+        (targetX - player.x) *
+        Math.min(1, 12 * dt);
+
+    // إنشاء سيارات
+    spawnTimer += dt * 1000;
+
+    const difficulty =
+        Math.min(1, distance / 1000);
+
+    spawnInterval =
+        850 - difficulty * 260;
+
+    if (spawnTimer >= spawnInterval) {
+
+        spawnTimer = 0;
+
+        spawnEnemy();
+
+        // فرصة بسيطة لسيارة ثانية مع زيادة السرعة
+        if (
+            Math.random() < difficulty * 0.25 &&
+            enemies.length < 5
+        ) {
+            setTimeout(() => {
+                if (running) spawnEnemy();
+            }, 150);
+        }
+    }
+
+    // تحريك السيارات
+    for (let i = enemies.length - 1; i >= 0; i--) {
+
+        const enemy = enemies[i];
+
+        enemy.y += speed * dt;
+
+        if (collision(player, enemy)) {
+            endGame();
+            return;
+        }
+
+        if (enemy.y - enemy.height / 2 > H + 20) {
+            enemies.splice(i, 1);
+        }
+    }
+
+    // تحديث الواجهة
+    distanceEl.textContent =
+        Math.floor(distance);
+
+    multiplierEl.textContent =
+        (speed / 300).toFixed(1);
+
+    bestEl.textContent =
+        Math.floor(bestScore);
+}
+
+// -----------------------------
+// الرسم
+// -----------------------------
+
+function draw() {
+
+    ctx.clearRect(0, 0, W, H);
+
+    drawRoad();
+
+    for (const enemy of enemies) {
+        drawCar(enemy);
+    }
+
+    drawCar(player, true);
+}
+
+// -----------------------------
+// الحلقة الرئيسية
+// -----------------------------
+
+function loop(time) {
+
+    if (!running) return;
+
+    const dt = Math.min(
+        (time - lastTime) / 1000,
+        0.033
+    );
+
+    lastTime = time;
+
+    update(dt);
+    draw();
+
+    animationId =
+        requestAnimationFrame(loop);
+}
+
+// -----------------------------
+// بدء اللعبة
+// -----------------------------
+
+function startGame() {
+
+    startScreen.style.display = "none";
+    gameOverScreen.style.display = "none";
+
+    distance = 0;
+    speed = 300;
+    spawnTimer = 0;
+    roadLineOffset = 0;
+
+    enemies = [];
+
+    player.lane = 1;
+    player.targetLane = 1;
+    player.x = laneCenter(1);
+    player.y = H - 125;
+
+    running = true;
+
+    lastTime = performance.now();
+
+    cancelAnimationFrame(animationId);
+
+    animationId =
+        requestAnimationFrame(loop);
+}
+
+// -----------------------------
+// نهاية اللعبة
+// -----------------------------
+
+function endGame() {
+
+    running = false;
+
+    cancelAnimationFrame(animationId);
+
+    if (distance > bestScore) {
+        bestScore = distance;
+    }
+
+    localStorage.setItem(
+        "bestScore",
+        bestScore
+    );
+
+    finalDistanceEl.textContent =
+        Math.floor(distance);
+
+    bestEl.textContent =
+        Math.floor(bestScore);
+
+    gameOverScreen.style.display = "flex";
+}
+
+// -----------------------------
+// التحكم
+// -----------------------------
+
+function moveLeft() {
+
+    if (!running) return;
+
+    if (player.targetLane > 0) {
+        player.targetLane--;
+    }
+}
+
+function moveRight() {
+
+    if (!running) return;
+
+    if (player.targetLane < lanes - 1) {
+        player.targetLane++;
+    }
+}
+
+// لوحة المفاتيح
+window.addEventListener("keydown", e => {
+
+    if (e.key === "ArrowLeft" || e.key === "a") {
+        moveLeft();
+    }
+
+    if (e.key === "ArrowRight" || e.key === "d") {
+        moveRight();
+    }
+});
+
+// اللمس والسحب
+let touchStartX = null;
+
+canvas.addEventListener("touchstart", e => {
+
+    touchStartX =
+        e.touches[0].clientX;
+
+}, { passive: true });
+
+canvas.addEventListener("touchend", e => {
+
+    if (touchStartX === null) return;
+
+    const endX =
+        e.changedTouches[0].clientX;
+
+    const diff =
+        endX - touchStartX;
+
+    if (Math.abs(diff) > 25) {
+
+        if (diff < 0) {
+            moveLeft();
+        } else {
+            moveRight();
+        }
+    }
+
+    touchStartX = null;
+
+}, { passive: true });
+
+// النقر على جانبي الشاشة
+canvas.addEventListener("click", e => {
+
+    if (!running) return;
+
+    const rect =
+        canvas.getBoundingClientRect();
+
+    const x =
+        e.clientX - rect.left;
+
+    if (x < W / 2) {
+        moveLeft();
+    } else {
+        moveRight();
+    }
+});
+
+// الأزرار
+startBtn.addEventListener(
+    "click",
+    startGame
+);
+
+restartBtn.addEventListener(
+    "click",
+    startGame
+);
+
+// -----------------------------
+// أفضل نتيجة للجلسة/المتصفح
+// -----------------------------
+
+bestScore =
+    Number(localStorage.getItem("bestScore")) || 0;
+
+bestEl.textContent =
+    Math.floor(bestScore);
+
+// تشغيل أول رسم
+resize();
+draw();
+</script>
+
+</body>
+</html>
